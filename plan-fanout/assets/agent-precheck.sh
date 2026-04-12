@@ -21,7 +21,7 @@
 #
 # Exit 0 if prettier and eslint pass (or aren't installed); non-zero otherwise.
 
-set -u
+set -euo pipefail
 
 if [ $# -eq 0 ]; then
     echo "usage: $0 <file1> [file2] ..." >&2
@@ -37,14 +37,30 @@ check_installed() {
     npx --no-install "$1" --version >/dev/null 2>&1
 }
 
+# Filter out files that don't exist (e.g. the agent's task was to delete or
+# rename a file). Prettier and eslint fail on missing paths.
+FILES=()
+for f in "$@"; do
+    if [ -f "$f" ]; then
+        FILES+=("$f")
+    else
+        echo "agent-precheck: skipping non-existent file: $f"
+    fi
+done
+
+if [ ${#FILES[@]} -eq 0 ]; then
+    echo "agent-precheck: no existing files to check (all deleted/renamed?)"
+    exit 0
+fi
+
 FAIL=0
 
 # --- prettier --write (auto-format) ----------------------------------------
 # Prettier rewrites are mechanical and deterministic; no judgment needed.
 # Always auto-fix so the reviewer sees consistently formatted code.
 if check_installed prettier; then
-    echo "==> prettier --write ($# files)"
-    if npx --no-install prettier --write "$@"; then
+    echo "==> prettier --write (${#FILES[@]} files)"
+    if npx --no-install prettier --write "${FILES[@]}"; then
         echo "    ok"
     else
         FAIL=1
@@ -61,8 +77,8 @@ fi
 # REPORTS. The orchestrator decides per issue whether to apply --fix, fix by
 # hand, or pass to the reviewer to flag.
 if check_installed eslint; then
-    echo "==> eslint ($# files)"
-    if npx --no-install eslint "$@"; then
+    echo "==> eslint (${#FILES[@]} files)"
+    if npx --no-install eslint "${FILES[@]}"; then
         echo "    ok"
     else
         FAIL=1

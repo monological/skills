@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # plan-fanout integration gate
 #
-# Runs prettier --check, tsc --noEmit (whole project, output filtered to
-# touched files), and eslint on every file the current fanout has touched in
-# the working tree. Touched files = modified vs HEAD plus untracked new files,
-# paths cwd-relative so monorepo subdirs work.
+# Runs prettier --check, tsc --noEmit (whole project, unfiltered), and eslint
+# on every file the current fanout has touched in the working tree. Touched
+# files = modified vs HEAD (excluding deletions) plus untracked new files,
+# paths cwd-relative so monorepo subdirs work. tsc runs unfiltered because
+# filtering to touched files hides regressions in untouched consumers.
 #
 # Usage: bash <path-to-skill>/assets/fanout-gate.sh
 #
@@ -18,9 +19,10 @@
 # Exit 0 if all present checks pass (or none are installed); non-zero if any
 # installed check fails.
 
-set -u
+set -euo pipefail
 
-TOUCHED=/tmp/fanout-touched.txt
+TOUCHED=$(mktemp /tmp/fanout-touched.XXXXXX)
+trap 'rm -f "$TOUCHED"' EXIT
 
 if [ ! -f package.json ]; then
     echo "fanout-gate: no package.json in current directory ($(pwd))" >&2
@@ -28,10 +30,10 @@ if [ ! -f package.json ]; then
     exit 2
 fi
 
-# Build the touched-files list. Two commands written sequentially because
-# shell state doesn't persist across invocations when Claude Code calls this
-# as a single command, but within a script it's just normal bash.
-git diff --relative --name-only HEAD >"$TOUCHED"
+# Build the touched-files list. Exclude deleted files (--diff-filter=d) so
+# downstream tools don't choke on paths that no longer exist. Untracked new
+# files are appended separately via ls-files.
+git diff --relative --name-only --diff-filter=d HEAD >"$TOUCHED"
 git ls-files -o --exclude-standard >>"$TOUCHED"
 
 if [ ! -s "$TOUCHED" ]; then
@@ -54,7 +56,7 @@ check_installed() {
 # --- prettier --------------------------------------------------------------
 if check_installed prettier; then
     echo "==> prettier --check (touched files)"
-    if xargs npx --no-install prettier --check <"$TOUCHED"; then
+    if tr '\n' '\0' <"$TOUCHED" | xargs -0 npx --no-install prettier --check; then
         echo "    passed"
     else
         FAIL=1
@@ -66,14 +68,14 @@ else
 fi
 
 # --- tsc -------------------------------------------------------------------
-# tsc can't be file-scoped at the invocation level — it needs the full module
-# graph to resolve imports and infer types. So run it against the whole
-# project, capture stderr+stdout, then filter through grep to keep only lines
-# that mention touched files. This surfaces real errors in the fanout's work
-# and drops pre-existing errors in unrelated files.
+# tsc runs against the whole project UNFILTERED. Filtering to touched files
+# hides regressions in untouched consumers — if a wave changes an exported
+# type, tsc reports the error at the consumer path (which may not be in the
+# touched list). Showing all errors is noisier when pre-existing errors exist,
+# but hiding real regressions is worse. The orchestrator triages.
 if check_installed tsc; then
-    echo "==> tsc --noEmit (whole project, filtered to touched files)"
-    TSC_ERRORS=$(npx --no-install tsc --noEmit 2>&1 | grep -F -f "$TOUCHED" || true)
+    echo "==> tsc --noEmit (whole project, unfiltered)"
+    TSC_ERRORS=$(npx --no-install tsc --noEmit 2>&1 || true)
     if [ -z "$TSC_ERRORS" ]; then
         echo "    passed"
     else
@@ -89,7 +91,7 @@ fi
 # --- eslint ----------------------------------------------------------------
 if check_installed eslint; then
     echo "==> eslint (touched files)"
-    if xargs npx --no-install eslint <"$TOUCHED"; then
+    if tr '\n' '\0' <"$TOUCHED" | xargs -0 npx --no-install eslint; then
         echo "    passed"
     else
         FAIL=1

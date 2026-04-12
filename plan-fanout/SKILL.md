@@ -156,7 +156,7 @@ Before spawning any subagent, show the user:
 3. Any scope gaps you caught during Phase 1 parsing that the plan missed, so the user can decide whether to expand scope before you lock the graph.
 4. Whether you recommend worktrees (almost always no — see "Worktrees" below).
 
-Then use `AskUserQuestion` to get approval or corrections. Phrase the question as a choice between concrete options, not an open "does this look right?".
+Then use `AskUserQuestion` to get approval or corrections. Phrase the question as a choice between concrete options, not an open "does this look right?". Example: "Approve this wave plan as-is / Merge tasks X and Y into one agent / Skip task Z / Other changes (describe)".
 
 **Do not skip this step** even if the plan looks obvious. The user's interactive correction at this step is the cheapest moment to catch missed scope — mid-fanout corrections are 10x more expensive because in-flight agents must be aborted or retroactively re-briefed.
 
@@ -230,7 +230,7 @@ The task list is the user's primary progress signal during a long-running fanout
    bash ~/.claude/skills/plan-fanout/assets/fanout-gate.sh
    ```
 
-   The script builds the touched-files list (modified vs HEAD + untracked new files, cwd-relative so monorepo subdirs work), detects which of prettier / tsc / eslint are installed in `node_modules`, and runs whichever are present. Tsc is run against the whole project (required — it needs the full module graph for import resolution) but its output is filtered through grep to touched files only, so pre-existing errors in untouched files are dropped. See `assets/fanout-gate.sh` for the source.
+   The script builds the touched-files list (modified vs HEAD, excluding deletions, plus untracked new files, cwd-relative so monorepo subdirs work), detects which of prettier / tsc / eslint are installed in `node_modules`, and runs whichever are present. Prettier and eslint run against the touched-files list only. Tsc runs against the whole project **unfiltered** — filtering to touched files would hide regressions in untouched consumers (e.g. a wave changes an exported type and the error surfaces in a file the wave didn't touch). Pre-existing tsc errors will show up; the orchestrator triages. See `assets/fanout-gate.sh` for the source.
 
    Why a script instead of an inline command: Claude Code's Bash tool flags process substitution (`<(...)`), command substitution (`$(...)`), and complex parameter expansion (`${...}`) as requiring per-invocation permission. The touched-files recipe needs all three, so running it as inline shell produces a permission prompt at every gate. A bundled script is a single simple command (`bash /path/to/script.sh`) that gets allowlisted cleanly, while the actual shell plumbing lives inside the script where it runs in a child shell the allowlist doesn't inspect.
 
@@ -266,11 +266,11 @@ Use the bundled reviewer template at `assets/code-reviewer.md`. It is a file-lis
    The script does NOT run `tsc` — tsc needs whole-project import context and can't be cleanly file-scoped while other wave agents may still have uncommitted work in progress. The per-wave integration typecheck (step 4 of the parent wave loop) handles tsc once all wave agents have returned.
 
 3. Open `assets/code-reviewer.md`. Substitute the placeholders:
-   - `{FILES_TO_REVIEW}` — space-separated list of the agent's owned files (verbatim from the brief you sent it).
-   - `{ABSOLUTE_REPO_PATH}` — the project root.
-   - `{WHAT_WAS_IMPLEMENTED}` — one sentence describing what this agent built (pull from its report or your brief).
-   - `{DESCRIPTION}` — 2-3 sentences with more detail.
-   - `{PLAN_REFERENCE}` — short pointer back to the plan file or wave-level intent (e.g. "Wave 1 of the task-tags feature in plans/task-tags.md").
+   - `{{FILES_TO_REVIEW}}` — space-separated list of the agent's owned files (verbatim from the brief you sent it).
+   - `{{ABSOLUTE_REPO_PATH}}` — the project root.
+   - `{{WHAT_WAS_IMPLEMENTED}}` — one sentence describing what this agent built (pull from its report or your brief).
+   - `{{DESCRIPTION}}` — 2-3 sentences with more detail.
+   - `{{PLAN_REFERENCE}}` — short pointer back to the plan file or wave-level intent (e.g. "Wave 1 of the task-tags feature in plans/task-tags.md").
 4. Dispatch the filled template via the `Agent` tool (or `Task` — whichever your environment uses for spawning subagents) with `subagent_type: "general-purpose"`. Pass the entire filled template as the agent's prompt. Set `run_in_background: false` — you want this review's verdict before moving on. **Do not specify a specialized reviewer subagent type.** The bundled `assets/code-reviewer.md` template is the specialization: it contains the full review checklist, output format, scoping rules, and plan-fanout-specific checks. A general-purpose subagent following this template produces a valid review without any external dependency. This is why the template lives in the skill — to keep the skill self-contained.
 5. **Read the verdict** when the review returns and **fix everything that makes sense to fix**, regardless of severity:
    - **Critical or Important issues**: fix them yourself in the main conversation before marking the task completed. Do not spawn another agent — the original agent has already returned and re-spawning to fix small issues is wasteful. The parent has full context.

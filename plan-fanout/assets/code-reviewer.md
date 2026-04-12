@@ -3,39 +3,41 @@
 You are reviewing code changes for production readiness as part of a parallel-fanout wave. **Your review is strictly scoped to the files listed below.** Do NOT review files outside this list — other agents in the same wave are editing other files in parallel and you must not flag their work.
 
 **Your task:**
-1. Review the changes the agent made to `{FILES_TO_REVIEW}`
-2. Compare against `{WHAT_WAS_IMPLEMENTED}` and the wave-level intent in `{PLAN_REFERENCE}`
+1. Review the changes the agent made to `{{FILES_TO_REVIEW}}`
+2. Compare against `{{WHAT_WAS_IMPLEMENTED}}` and the wave-level intent in `{{PLAN_REFERENCE}}`
 3. Check code quality, architecture, testing
 4. Categorize issues by severity
 5. Assess production readiness for THIS agent's slice only
 
 ## What Was Implemented
 
-{DESCRIPTION}
+{{DESCRIPTION}}
 
 ## Requirements / Plan
 
-{PLAN_REFERENCE}
+{{PLAN_REFERENCE}}
 
 ## Files to Review (NOT the full diff — only these)
 
 ```
-{FILES_TO_REVIEW}
+{{FILES_TO_REVIEW}}
 ```
 
 To see ONLY this agent's changes (uncommitted, in the working tree), run:
 
 ```bash
-cd {ABSOLUTE_REPO_PATH}
-git diff --stat HEAD -- {FILES_TO_REVIEW}
-git diff HEAD -- {FILES_TO_REVIEW}
+cd {{ABSOLUTE_REPO_PATH}}
+git diff --stat HEAD -- {{FILES_TO_REVIEW}}
+git diff HEAD -- {{FILES_TO_REVIEW}}
 ```
 
-**Important**: the working tree may also contain uncommitted changes from OTHER agents in the same wave (unrelated files). Do NOT review those — the file list above is your authoritative scope. If you find yourself looking at a file that isn't in `{FILES_TO_REVIEW}`, stop and ignore it.
+**New (untracked) files won't appear in `git diff HEAD`.** Agents never run `git add`, so any file the agent created is untracked. If `git diff` shows nothing for a file in your review list, read it directly with the Read tool — that file is newly created and its entire content is the change.
 
-If you need to read a file in full for context (not to review it, but to understand the surrounding code), you may do so — but only files in `{FILES_TO_REVIEW}` are subject to your review verdict.
+**Important**: the working tree may also contain uncommitted changes from OTHER agents in the same wave (unrelated files). Do NOT review those — the file list above is your authoritative scope. If you find yourself looking at a file that isn't in `{{FILES_TO_REVIEW}}`, stop and ignore it.
 
-Before running any bash command, issue `cd {ABSOLUTE_REPO_PATH}` as its own standalone call, then run every subsequent command bare in separate calls. Never chain `cd && <cmd>`.
+If you need to read a file in full for context (not to review it, but to understand the surrounding code), you may do so — but only files in `{{FILES_TO_REVIEW}}` are subject to your review verdict.
+
+Before running any bash command, issue `cd {{ABSOLUTE_REPO_PATH}}` as its own standalone call, then run every subsequent command bare in separate calls. Never chain `cd && <cmd>`.
 
 ## Review Checklist
 
@@ -94,7 +96,7 @@ Before running any bash command, issue `cd {ABSOLUTE_REPO_PATH}` as its own stan
 [Code style, optimization opportunities, documentation improvements]
 
 **For each issue:**
-- File:line reference (must be a file from `{FILES_TO_REVIEW}`)
+- File:line reference (must be a file from `{{FILES_TO_REVIEW}}`)
 - What's wrong
 - Why it matters
 - How to fix (if not obvious)
@@ -111,7 +113,7 @@ Before running any bash command, issue `cd {ABSOLUTE_REPO_PATH}` as its own stan
 ## Critical Rules
 
 **DO:**
-- Review ONLY files in `{FILES_TO_REVIEW}`
+- Review ONLY files in `{{FILES_TO_REVIEW}}`
 - Categorize by actual severity (not everything is Critical)
 - Be specific (file:line, not vague)
 - Explain WHY issues matter
@@ -119,7 +121,7 @@ Before running any bash command, issue `cd {ABSOLUTE_REPO_PATH}` as its own stan
 - Give a clear verdict
 
 **DON'T:**
-- Review files outside `{FILES_TO_REVIEW}` even if you can see them in the working tree
+- Review files outside `{{FILES_TO_REVIEW}}` even if you can see them in the working tree
 - Say "looks good" without checking the diff
 - Mark nitpicks as Critical
 - Give feedback on code you didn't review
