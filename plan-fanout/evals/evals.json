@@ -1,0 +1,26 @@
+{
+  "skill_name": "plan-fanout",
+  "evals": [
+    {
+      "id": 1,
+      "name": "trivial-single-file-plan",
+      "prompt": "I have a plan at /tmp/plan-fanout-test/plans/add-timestamp-helper.md that just adds a `formatRelativeTime` utility to web/lib/utils.ts. Can you fan this out to parallel subagents?",
+      "expected_behavior": "The skill should recognize this is a single-file, trivial plan (one function added to one file) and refuse to fan out. Instead it should tell the user 'this is too small for fanout — I'll just do it in the main conversation' and execute the task directly without spawning subagents. Wall-clock and context cost should be lower than a fanout. The graph presentation step should still happen (showing the one-task graph) so the user sees why fanout was skipped.",
+      "files": ["/tmp/plan-fanout-test/plans/add-timestamp-helper.md", "/tmp/plan-fanout-test/repo/web/lib/utils.ts"]
+    },
+    {
+      "id": 2,
+      "name": "three-way-parallel-no-coupling",
+      "prompt": "Fan out the plan at /tmp/plan-fanout-test/plans/add-three-hooks.md with parallel subagents. This plan adds three independent SWR hooks to web/lib/hooks/ — use-foo-stats.ts, use-bar-stats.ts, use-baz-stats.ts — each consuming a different existing API endpoint. No shared types between them.",
+      "expected_behavior": "The skill should build a dependency graph with one wave containing three parallel-safe tasks (file-disjoint, no type coupling). It should present the graph via AskUserQuestion, get approval, then spawn three background agents in the SAME TURN (parallel), each with a self-contained prompt containing the preamble, owned-files list, endpoint contract, and report format. After all three complete, the skill should run a typecheck integration gate in the main conversation and report results.",
+      "files": ["/tmp/plan-fanout-test/plans/add-three-hooks.md", "/tmp/plan-fanout-test/repo/web/lib/hooks/"]
+    },
+    {
+      "id": 3,
+      "name": "multi-wave-with-signature-coupling",
+      "prompt": "Here's a plan at /tmp/plan-fanout-test/plans/rename-user-to-account.md. It renames the `User` type to `Account` across the backend (web/lib/db/types.ts), updates all API routes that consume it (auth.ts, users.ts, billing.ts), updates the matching tests, and adds a new SWR hook use-account.ts that consumes the renamed type. Fan this out with parallel subagents please.",
+      "expected_behavior": "The skill should produce a multi-wave plan: Wave 0 (types.ts — the rename itself, run in main conversation because it's small and everything else depends on it), Wave 1 (API routes + tests — these MUST be merged into a single agent because the type signature cascade crosses all three files, per the signature-coupling rule), Wave 2 (the new hook — can run in parallel with Wave 1 since it's pure additive and doesn't modify existing consumers of the old name). The skill should explicitly call out the signature-coupling merge in the graph presentation ('merged W1 because the User→Account rename cascades through these three files'). Integration typecheck should run between Wave 1 and Wave 2 and again at the end. No worktrees.",
+      "files": ["/tmp/plan-fanout-test/plans/rename-user-to-account.md", "/tmp/plan-fanout-test/repo/web/"]
+    }
+  ]
+}
