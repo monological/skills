@@ -58,10 +58,10 @@ Your job:
    - **Files touched**: exact absolute paths. If the plan names files vaguely ("the chat agent"), grep the repo to resolve them and report the exact paths.
    - **Type/contract changes**: any function signature, interface, exported type, or data shape that will change. Read the actual files — don't guess from the plan. Quote the current signature verbatim.
    - **Read-dependencies**: files this task must read for context (shared types, helper functions) even if it doesn't modify them.
-   - **Depends on**: other tasks in this plan that must land first (e.g., "needs the new ProductNameIdeasTable interface to exist").
+   - **Depends on**: other tasks in this plan that must land first (e.g., "needs the new TaskTagsTable interface to exist").
 
 3. **Scope-gap scan (this is the most valuable part).** For each key identifier the plan changes — type names, function names, interface fields, route paths, config keys — grep the repo for ALL occurrences. Report any usage that is NOT in the file set the plan mentions. Examples of what counts as a scope gap:
-   - The plan updates `buildFunnelDocContext` but another file `buildOfferDocContext` has the same shape and reads the same fields.
+   - The plan updates `buildCopilotContext` but another file `buildDigestContext` has the same shape and reads the same fields.
    - The plan renames a type in types.ts but a test file or a sibling route still imports the old name.
    - The plan changes an API response shape but a hook in another directory still types against the old shape.
    For each scope gap, report: the identifier, the file(s) where usage was found, a one-line code snippet showing the usage, and whether it looks like a "must update" (same pattern, will break) or "might update" (related but could stay).
@@ -135,8 +135,6 @@ The rule is:
 
 > **Two tasks can run in the same wave if and only if (1) their file ownership sets are disjoint AND (2) no changing type signature or shared function contract spans a boundary between them.**
 
-Disjointness alone is not enough. If task A changes the return type of a helper function and task B updates a caller of that helper, they **must stay in the same agent**, even if they live in different files. A partial type cascade across agent boundaries produces typecheck errors the parent has to resolve by hand, and defeats the point of parallelism.
-
 This is the **signature-coupling rule**. When in doubt, merge.
 
 Wave selection:
@@ -178,9 +176,9 @@ Use `assets/prompt-skeleton.md` as the structural template — it includes both 
 1. **Preamble** — paste `assets/preamble.md` verbatim, substituting `{{ABSOLUTE_REPO_PATH}}` and `{{OWNED_FILES}}`. Same preamble for every agent in every fanout.
 2. **Task body** — feature context, type contracts inlined verbatim, line-numbered edit instructions, verification step. The skeleton file shows the section structure and a fully-filled illustrative example.
 
-**Why the verbatim inlining matters**: subagents have no ability to re-open the user's plan from memory. If you tell them to "match the `TagsJson` shape defined in the spec", different agents may drift and produce incompatible interfaces. Inlining the shape in every prompt that needs it keeps the parallel agents synchronized.
+**Inline type contracts verbatim in every prompt that needs them** — don't reference the plan or spec file. If two agents share a type, both prompts must have identical inline copies. See Phase 2's worked example for why this matters.
 
-**Why the preamble matters**: agents do not inherit CLAUDE.md from the project. Every repo-wide rule they must follow must be stated in the prompt, even if it's "obvious" to a developer familiar with the project. See `assets/preamble.md` for the boilerplate.
+**Be explicit about required vs optional in briefs.** If you label something "optional, skip if complex", expect variance — the model may or may not implement it depending on the run. If you actually want it, say "required" or "implement this." Reserve "optional" for things you genuinely don't care about.
 
 **Tests often share helper/base objects.** When writing the task body for an agent that touches tests, tell it to grep for shared `base`/`baseParams`/`helperParams` patterns — updating the shared object once cascades to every call site. This is a huge time-saver. Don't assume the agent will find this pattern on its own; tell it explicitly to look.
 
@@ -213,14 +211,7 @@ The task list is the user's primary progress signal during a long-running fanout
    Agent(subagent_type: "general-purpose", prompt: <W1-C brief>, run_in_background: true)
    ```
 
-   **Wrong pattern** — one Agent call, response ends, wait, dispatch next. This is serial execution with extra steps and defeats the entire point of plan-fanout:
-   ```
-   Response 1: Agent(W1-A, run_in_background: true)   ← response ends, waits for W1-A notification
-   Response 2 (after notification): Agent(W1-B, ...)  ← response ends, waits for W1-B
-   Response 3 (after notification): Agent(W1-C, ...)
-   ```
-
-   If your intuition says "let me dispatch one first and see how it goes", that's wrong — emit all of them at once. The whole wave goes out in one response or it isn't a fanout. A symptom that this went wrong: the task list shows multiple tasks as `in_progress` but the runtime's "N local agents" counter shows fewer than that. That means you marked them in_progress but never actually dispatched them.
+   Symptom that this went wrong: the task list shows multiple tasks as `in_progress` but the runtime's "N local agents" counter shows fewer. That means you marked them in_progress but never dispatched them — emit all Agent calls in one response.
 
 2. **Do not poll**. You will receive a completion notification automatically for each agent as it finishes. Go do something useful in the interim (draft the next wave's prompts, work on an unrelated concern the user has, write a quick checklist). If you find yourself tempted to "check on" the agents, don't — you'll get notified.
 3. **As each agent completes**, do NOT immediately mark its task completed. Instead run the per-agent code review (next subsection) first. Then mark the task `completed`.
@@ -231,8 +222,6 @@ The task list is the user's primary progress signal during a long-running fanout
    ```
 
    The script builds the touched-files list (modified vs HEAD, excluding deletions, plus untracked new files, cwd-relative so monorepo subdirs work), detects which of prettier / tsc / eslint are installed in `node_modules`, and runs whichever are present. Prettier and eslint run against the touched-files list only. Tsc runs against the whole project **unfiltered** — filtering to touched files would hide regressions in untouched consumers (e.g. a wave changes an exported type and the error surfaces in a file the wave didn't touch). Pre-existing tsc errors will show up; the orchestrator triages. See `assets/fanout-gate.sh` for the source.
-
-   Why a script instead of an inline command: Claude Code's Bash tool flags process substitution (`<(...)`), command substitution (`$(...)`), and complex parameter expansion (`${...}`) as requiring per-invocation permission. The touched-files recipe needs all three, so running it as inline shell produces a permission prompt at every gate. A bundled script is a single simple command (`bash /path/to/script.sh`) that gets allowlisted cleanly, while the actual shell plumbing lives inside the script where it runs in a child shell the allowlist doesn't inspect.
 
    Optionally also run `git diff --stat HEAD` at this point to eyeball the cumulative scope and confirm nothing unexpected landed — a cheap sanity check that often catches scope creep you'd otherwise only notice at the final gate.
 5. If typecheck finds errors, **fix them yourself in the main conversation** — don't spawn another agent for small drift. The parent is always the right place for cross-file integration fixes.
@@ -247,23 +236,13 @@ Use the bundled reviewer template at `assets/code-reviewer.md`. It is a file-lis
 **Per-agent review flow:**
 
 1. Read the agent's report carefully. If it failed (per the error-recovery rules below), handle the failure first — do NOT review a failed agent.
-2. **Run the per-agent precheck script** on the agent's owned files before dispatching the reviewer. This auto-formats with prettier and lint-checks with eslint, so the reviewer sees consistently formatted code and doesn't waste tokens on `prefer-const`-class findings.
-
-   From the directory containing `package.json` (project root, or `web/` in a monorepo — wherever `tsc` would normally run), run:
+2. **Run the per-agent precheck script** on the agent's owned files. Run from the directory containing `package.json`:
 
    ```bash
    bash ~/.claude/skills/plan-fanout/assets/agent-precheck.sh <owned-file-1> <owned-file-2> ...
    ```
 
-   Pass the agent's owned-file paths as literal positional arguments — these come from the brief the orchestrator sent to the agent. Type them out; do NOT use shell globs, variables, or command substitutions on the call site. The script's internal logic handles devDependency detection, prettier `--write` auto-format, and eslint reporting; see `assets/agent-precheck.sh` for the source.
-
-   The script is idempotent: if prettier is already clean, it's a no-op. If it's not, prettier rewrites in place. eslint errors are reported (but NOT auto-fixed — `eslint --fix` can change semantics subtly and should be applied with judgment, not by default).
-
-   If eslint reports errors:
-   - For trivially auto-fixable issues (`prefer-const`, unused imports), you may run `npx eslint --fix <owned-files>` by hand and then read the diff to confirm the changes are safe.
-   - For substantive issues (real rule violations, type-aware findings), fix them yourself in main before dispatching the reviewer.
-
-   The script does NOT run `tsc` — tsc needs whole-project import context and can't be cleanly file-scoped while other wave agents may still have uncommitted work in progress. The per-wave integration typecheck (step 4 of the parent wave loop) handles tsc once all wave agents have returned.
+   Pass file paths as literal positional args from the brief. The script auto-formats with prettier (`--write`) and lint-checks with eslint (report-only, no `--fix`). Fix anything it flags in main before dispatching the reviewer. See `assets/agent-precheck.sh` for details.
 
 3. Open `assets/code-reviewer.md`. Substitute the placeholders:
    - `{{FILES_TO_REVIEW}}` — space-separated list of the agent's owned files (verbatim from the brief you sent it).
@@ -285,7 +264,7 @@ Use the bundled reviewer template at `assets/code-reviewer.md`. It is a file-lis
 - The agent's task was a single mechanical edit (e.g., bumping a version number, adding a single import). Use judgment.
 - The user has explicitly said they want to skip code reviews for this fanout (rare; only honor if explicit).
 
-**Cost acknowledgment**: per-agent reviews add real wall-clock time — one extra subagent dispatch per agent, running after all wave agents complete. For a 4-agent wave that's 4 sequential reviews. This is intentional: the cost is paid for correctness, not speed. If the user explicitly wants a faster fanout and is willing to skip reviews, honor that, but it's not the default.
+**Note**: per-agent reviews are sequential and add wall-clock time. This is intentional — correctness over speed. Skip only if the user explicitly asks.
 
 ### Error recovery — when an agent fails or the gate finds problems
 
@@ -329,21 +308,13 @@ When escalating, keep the successful agents' work in place. Tell the user exactl
 
 ### End-of-fanout final gate
 
-After the LAST wave's per-agent reviews are all done and the per-wave integration typecheck is clean, run the same integration gate script one more time — this time against the cumulative working-tree state of every wave the fanout has run. From the directory containing `package.json`:
+Run the same gate script one more time against the full cumulative working-tree state:
 
 ```bash
 bash ~/.claude/skills/plan-fanout/assets/fanout-gate.sh
 ```
 
-This is the same script used at each per-wave gate (step 4 of "For each parallel wave" above). At the per-wave level it operates on whatever state the working tree is in after that wave's agents return; at the end-of-fanout level it operates on the full cumulative state, which will have grown as later waves landed. Re-running it here catches:
-
-- Cross-wave drift that didn't show up at the per-wave gate (e.g., W2 subtly broke something W1 left working)
-- Final prettier / eslint issues that weren't per-wave-scoped concerns (per-wave runs focus on tsc; end-of-fanout includes the full trio)
-- Anything that the per-agent prechecks or reviewers missed
-
-If the script exits non-zero, fix errors in the main conversation. **Do not commit.** The script does not run the project's test suite — that remains the user's responsibility post-handoff (or the user can explicitly ask the orchestrator to run tests, in which case it should cd into the right dir and invoke them).
-
-If the script reports "no touched files — nothing to check", the fanout produced no uncommitted changes at all, which usually means something went wrong upstream (every agent returned without editing anything). Investigate before proceeding to handoff.
+This catches cross-wave drift and anything the per-agent prechecks or reviewers missed. If the script exits non-zero, fix errors in main. If it reports "no touched files", the fanout produced no changes — investigate before proceeding (every agent may have no-oped due to a bad brief). **Do not commit** — the user commits manually after reviewing the full diff at handoff.
 
 ### Handoff to the user
 
@@ -354,6 +325,8 @@ When the final gate passes, you're done. **Do not commit.** Present a summary to
 3. **Files touched** — run `git diff --stat HEAD` and paste the output verbatim so the user sees the scope at a glance.
 4. **Outstanding issues** — any Minor-severity review findings you deliberately left for later, any scope the user deferred, any parts of the plan you could not complete.
 5. **Next action** — tell the user: "All work is in your working tree, uncommitted. Review the diff with `git diff HEAD` and commit when you're satisfied. If you want me to make further changes first, tell me now."
+
+6. **Brief learnings** — if the same error appeared across multiple agents or across re-runs (e.g., a recurring lint error, an import the brief forgot to exclude), note it here so the user can bake it into the brief for future fanouts. Recurring errors are brief gaps, not bad luck.
 
 This handoff is the end of the orchestrator's turn. The user takes over from here.
 
@@ -369,9 +342,7 @@ Put these in the preamble and repeat them in the task body if the agent is likel
 
    **Parent orchestrator (softer rule)**: Do not *autonomously* run state-mutating git as part of the fanout workflow. That means: don't add commits between waves, don't stash files automatically, don't reset on failure, don't do git gymnastics as part of the normal orchestration loop. The default end-state of a fanout is "working tree has all the fanout's changes uncommitted, user reviews the full diff, user commits manually." This keeps the entire fanout reviewable as one coherent diff.
 
-   **But the parent IS still the user's assistant.** If the user directly asks you to do a git thing — "stash everything except the spec", "commit this", "amend the last commit", "checkout the old version of X", "clean up those stashes", whatever — **just do it**. Do not hedge. Do not cite this rule. Do not require a second confirmation. The user's explicit request IS the authorization. They've stepped outside the autonomous-orchestration path and are telling you what to do directly; your job is to comply, not to question whether the fanout skill "permits" it. This rule is about default behavior, not a user-interaction straitjacket.
-
-   The line is: **autonomous = no; user-directed = yes**. If you find yourself writing "Stash is on the destructive-ops list per CLAUDE.md, but you've explicitly authorized it..." — stop. That hedge is the bug this rule is trying to prevent. Just run the command and report the result.
+   **But the parent IS still the user's assistant.** If the user directly asks you to do a git thing — stash, commit, amend, checkout, whatever — **just do it**. No hedging, no citing this rule, no second confirmation. **Autonomous = no; user-directed = yes.**
 
 3. **Never tell a subagent to run a dev server** (`npm run dev`, `cargo run`, etc.) or any command that doesn't terminate. It will hang the agent.
 
