@@ -23,13 +23,13 @@ You are reviewing code changes for production readiness as part of a parallel-fa
 {{FILES_TO_REVIEW}}
 ```
 
-To see ONLY this agent's changes (uncommitted, in the working tree), run:
+To see ONLY this agent's changes (uncommitted, in the working tree), run each of these as a SEPARATE Bash tool call (never chain them with `&&`, never combine `cd` with another command):
 
-```bash
-cd {{ABSOLUTE_REPO_PATH}}
-git diff --stat HEAD -- {{FILES_TO_REVIEW}}
-git diff HEAD -- {{FILES_TO_REVIEW}}
-```
+1. First call: `cd {{ABSOLUTE_REPO_PATH}}`
+2. Second call: `git diff --stat HEAD -- {{FILES_TO_REVIEW}}`
+3. Third call: `git diff HEAD -- {{FILES_TO_REVIEW}}`
+
+The Bash tool's working directory persists across calls, so the bare git commands run in the directory you cd'd to. Do not write `cd {{ABSOLUTE_REPO_PATH}} && git diff ...` — that is a forbidden compound command (see the standalone-commands rule below).
 
 **New (untracked) files won't appear in `git diff HEAD`.** Agents never run `git add`, so any file the agent created is untracked. If `git diff` shows nothing for a file in your review list, read it directly with the Read tool — that file is newly created and its entire content is the change.
 
