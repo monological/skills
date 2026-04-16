@@ -1,6 +1,6 @@
 ---
 name: plan-fanout
-description: Execute an approved plan or spec file by fanning out its tasks to parallel background subagents, orchestrated by a dependency graph. Use this whenever the user has a plan/spec markdown file and wants it implemented via parallel agents — triggers on "fan this out", "parallelize this plan", "run this plan with subagents", "execute this plan in parallel", "subagent fanout", "/plan-fanout", or when the user points at a `.md` plan/spec and asks to implement it in parallel. Also trigger when the user says things like "can you run this plan" or "implement this spec" if the plan is non-trivial enough to benefit from wave-based parallelization. Builds a dependency graph, groups tasks into parallel-safe waves, generates self-contained briefs for each agent, presents the wave plan for approval, then orchestrates wave-by-wave with integration gates between waves.
+description: Execute an approved plan or spec file by fanning out its tasks to parallel background subagents, orchestrated by a dependency graph. Use this whenever the user has a plan/spec markdown file and wants it implemented via parallel agents — triggers on "fan this out", "parallelize this plan", "run this plan with subagents", "execute this plan in parallel", "subagent fanout", "/plan-fanout", or when the user points at a `.md` plan/spec and asks to implement it in parallel. Also trigger when the user says things like "can you run this plan" or "implement this spec" if the plan is non-trivial enough to benefit from wave-based parallelization. The plan path is optional — if not given, infer likely candidates from conversation context (recently referenced/drafted `.md` files, recently modified files in `~/.claude/plans/` or `specs/`) and confirm with `AskUserQuestion` before proceeding. Builds a dependency graph, groups tasks into parallel-safe waves, generates self-contained briefs for each agent, presents the wave plan for approval, then orchestrates wave-by-wave with integration gates between waves.
 ---
 
 # plan-fanout
@@ -9,7 +9,7 @@ Execute an approved plan file by fanning its tasks out to parallel background su
 
 ## When this skill applies
 
-The user has a plan or spec markdown file — typically in `~/.claude/plans/`, `specs/`, or a path they give you — and wants the implementation work done in parallel by background agents rather than serially in the main conversation.
+The user has a plan or spec markdown file — typically in `~/.claude/plans/`, `specs/`, or a path they give you — and wants the implementation work done in parallel by background agents rather than serially in the main conversation. The path may be given explicitly or left for you to infer from conversation context (see Phase 1 Step 0).
 
 If the plan is trivial (one file, under ~30 lines of changes), don't fan out at all — just do it in the main conversation. The overhead of agent briefing + integration exceeds the savings.
 
@@ -33,7 +33,27 @@ The pattern is:
 
 ## Phase 1 — Read and parse the plan
 
-If no plan path was given, ask for one — do NOT auto-detect. Auto-detection is brittle and leads to running the wrong plan.
+**Step 0: Identify the plan file.** The user may or may not hand you an explicit path. Handle both cases:
+
+- **Explicit path given** ("fan out `~/.claude/plans/task-tags.md`", "run this plan: /abs/path/spec.md"): use it directly. Skip to Step 1.
+- **No explicit path** ("fan this out", "run the plan", "parallelize this"): infer the candidate(s) from conversation context, then **confirm with the user via `AskUserQuestion` before proceeding**. Never silently guess — a wrong plan wastes an entire fanout.
+
+When inferring, look at these signals in order:
+
+1. A `.md` file the user explicitly referenced earlier in the current conversation (highest confidence — they already named it).
+2. A `.md` file you (the assistant) just wrote, edited, or displayed — e.g., a plan/spec you drafted in a prior turn.
+3. Recently modified `.md` files in conventional plan directories: `~/.claude/plans/`, `specs/`, `plans/`, `docs/plans/`, or the repo root. Use `ls -lt` or an equivalent to sort by mtime.
+4. Files whose name or content looks plan-shaped (contains "plan", "spec", "rfc", "proposal", or a task-list structure).
+
+Present the top 1-3 candidates via `AskUserQuestion` **with absolute paths** so the user can verify. Example phrasing:
+
+> I don't have an explicit plan path. Based on context, the most likely candidates are:
+> - `/abs/path/to/plans/task-tags.md` (you referenced this 2 turns ago)
+> - `/abs/path/to/plans/auth-rewrite.md` (most recently modified in ~/.claude/plans/)
+>
+> Which should I fan out? / None of these — let me give you the path / Cancel
+
+If the user picks a candidate, use that path. If they supply a different path, use it. If none of the candidates are right and the user can't easily name one, ask them to point you at it before continuing — do not proceed on a guess.
 
 **Step 1: Read the plan yourself, quickly.** Just enough to understand the shape of what's being asked — how many tasks, what rough areas of the repo are involved, whether it's a 1-wave or multi-wave job. Don't try to extract every detail here.
 
