@@ -24,9 +24,13 @@ The pattern is:
    │
 [Wave 1] Parallel tasks with disjoint file ownership — background agents, one per task.
    │
-[Integration gate] Parent runs typecheck across the whole repo.
+[W1 Review gate] Parent aggregates per-agent reviews, dedupes findings, applies fixes in one pass.
+   │
+[W1 Integration gate] Parent runs typecheck across the whole repo.
    │
 [Wave 2] Parallel tasks that depend on Wave 1 outputs — background agents.
+   │
+[W2 Review gate] + [W2 Integration gate] …repeat per wave.
    │
 [Final gate] Parent runs format + typecheck + lint. Fixes any cross-file drift.
 ```
@@ -169,7 +173,7 @@ Also: check whether the task list includes anything that obviously belongs out-o
 
 Before spawning any subagent, show the user:
 
-1. **An ASCII dependency graph of the waves in the stacked-boxes format** — see `assets/wave-diagram-example.md` for the canonical template and a full worked example. Key rules, in short: one box per task stacked vertically (never columns inside a single big box — fixed-width columns force file paths to wrap on arbitrary boundaries and the diagram becomes unreadable); coupling rationale on the header line after `──`, not buried below the file list; file list as full-width bullets one-per-line; `│`/`▼` arrows between waves with a wave label like `W1 — 3 parallel background agents` sitting between the arrow and the first task box; no arrows between tasks within the same wave. The asset file has the full worked example you can copy the structure from.
+1. **An ASCII dependency graph of the waves in the stacked-boxes format**, **including a review-gate box between each wave and the final-gate box at the end** — see `assets/wave-diagram-example.md` for the canonical template and a full worked example. Key rules, in short: one box per task stacked vertically (never columns inside a single big box — fixed-width columns force file paths to wrap on arbitrary boundaries and the diagram becomes unreadable); coupling rationale on the header line after `──`, not buried below the file list; file list as full-width bullets one-per-line; `│`/`▼` arrows between waves with a wave label like `W1 — 3 parallel background agents` sitting between the arrow and the first task box; no arrows between tasks within the same wave; a review-gate box after each wave's parallel tasks (before the next wave's arrow). The asset file has the full worked example you can copy the structure from.
 2. Per-wave: the tasks, the files each one owns, and why they're grouped that way (especially merges enforced by the signature-coupling rule). This information is already in the diagram — step 2 just calls it out so the reader knows to look.
 3. Any scope gaps you caught during Phase 1 parsing that the plan missed, so the user can decide whether to expand scope before you lock the graph.
 4. Whether you recommend worktrees (almost always no — see "Worktrees" below).
@@ -208,18 +212,25 @@ Use `assets/prompt-skeleton.md` as the structural template — it includes both 
 
 The task list is the user's primary progress signal during a long-running fanout. They see it update live as waves progress. Set it up once, upfront, so the full dep graph is visible from the start.
 
-**CRITICAL: Every task MUST be explicitly marked `completed` via `TaskUpdate` the moment its work is finished.** Do not forget this. Do not batch it. Do not assume the user will infer completion from context. If an agent finishes and its review passes, call `TaskUpdate(task, completed)` before moving on. If you skip this, the task list misrepresents state — the user sees stale `in_progress` entries, can't tell what's actually done, and loses the ability to interrupt intelligently. A forgotten `completed` marker is a correctness bug in the orchestration loop, not a cosmetic oversight.
+**CRITICAL: Every task MUST be explicitly marked `completed` via `TaskUpdate` at the right moment — not forgotten, not inferred from context.** Timing per task type:
+- **W0 (foundation)**: `in_progress` at start of main-conversation W0 work, `completed` before dispatching Wave 1.
+- **Wave agents**: `in_progress` on dispatch (step 1 of "For each parallel wave"); stays `in_progress` through the per-agent review; `completed` at the end of the wave's review gate (step 4), after the consolidated fixes have landed. NOT when the agent returns.
+- **Review gate**: `in_progress` as soon as the last wave-agent completes (even while some per-agent reviews are still returning); `completed` as the last call of step 4, right after the wave-agent tasks are closed and fixes are applied.
+- **Final gate**: `completed` after the final-gate run of `fanout-gate.sh` passes at the end of the fanout.
 
-1. **Before fanning out the first wave**, create a `TaskCreate` entry for EVERY task in the full wave plan across all waves. Use descriptive labels like `"W1-A: CRUD endpoints in tasks.ts"` not just `"Task 1"`. (If your environment doesn't have a structured task-tracking tool, skip this — the wave plan in your own context is sufficient. The task list is purely a user-visibility feature.)
-2. **Wire dependencies with `addBlockedBy`** so the task list mirrors the graph. A Wave 2 task should be `blockedBy` its Wave 1 dependencies. The user can then see what's unblocked at a glance.
-3. **Add a final task** for the integration gate (`"Final: format + typecheck + lint"`) and set `addBlockedBy` to every wave task. This visualizes the completion fence.
-4. **Mark W0 `in_progress`** and execute it in the main conversation (not a subagent). Mark it `completed` when done.
+A forgotten `completed` marker is a correctness bug in the orchestration loop, not a cosmetic oversight — the user sees stale `in_progress` entries, can't tell what's actually done, and loses the ability to interrupt intelligently.
+
+1. **Before fanning out the first wave**, create a `TaskCreate` entry for EVERY wave agent across all waves. Use descriptive labels like `"W1-A: CRUD endpoints in tasks.ts"` not just `"Task 1"`. (If your environment doesn't have a structured task-tracking tool, skip this — the wave plan in your own context is sufficient. The task list is purely a user-visibility feature.)
+2. **Add a review-gate task per wave** (e.g. `"W1: Review gate — aggregate + dedupe + fix"`). Set `addBlockedBy` to every wave agent in that wave. This is the task that collects all per-agent review verdicts, deduplicates findings that appear across multiple agents (e.g., three agents all imported a since-removed utility — that's ONE fix, not three), and applies the consolidated fix pass in the main conversation.
+3. **Wire inter-wave dependencies with `addBlockedBy`** so the task list mirrors the graph. A Wave 2 agent should be `blockedBy` its Wave 1 review-gate task (not the individual wave-1 agents) — because Wave 2 can't safely start until Wave 1's fixes have landed. The user can then see what's unblocked at a glance.
+4. **Add a final task** for the end-of-fanout integration gate (`"Final: format + typecheck + lint"`) and set `addBlockedBy` to every review-gate task. This visualizes the completion fence.
+5. **Mark W0 `in_progress`** and execute it in the main conversation (not a subagent). Mark it `completed` when done.
 
 ### For each parallel wave
 
 1. **Dispatch the entire wave in a SINGLE assistant response** using parallel tool_use blocks. This is the critical move of the whole skill — get it wrong and the wave serializes. In ONE response, emit:
-   - One `TaskUpdate(..., in_progress)` call per wave task (so the task list reflects live dispatch state).
-   - One `Agent(...)` call per wave task with `run_in_background: true` and `isolation` unset (no worktree), passing the assembled prompt.
+   - One `TaskUpdate(..., in_progress)` call per **wave-agent task** (NOT the review-gate task — that is marked `in_progress` later at step 4).
+   - One `Agent(...)` call per wave-agent task with `run_in_background: true` and `isolation` unset (no worktree), passing the assembled prompt.
 
    All of these are tool_use blocks inside the same assistant message. Order within the message doesn't matter — they execute in parallel. The response ends after the last tool_use block and you wait for the first agent's completion notification.
 
@@ -236,8 +247,33 @@ The task list is the user's primary progress signal during a long-running fanout
    Symptom that this went wrong: the task list shows multiple tasks as `in_progress` but the runtime's "N local agents" counter shows fewer. That means you marked them in_progress but never dispatched them — emit all Agent calls in one response.
 
 2. **Do not poll**. You will receive a completion notification automatically for each agent as it finishes. Go do something useful in the interim (draft the next wave's prompts, work on an unrelated concern the user has, write a quick checklist). If you find yourself tempted to "check on" the agents, don't — you'll get notified.
-3. **As each agent completes**, do NOT immediately mark its task completed. Instead run the per-agent code review (next subsection) first. Then **explicitly call `TaskUpdate(task, completed)`** — do not skip this step, do not defer it to "later", do not assume it's implicit. The marker must be set the moment the review passes and any fixes are applied.
-4. **After ALL agents in the wave finish AND all per-agent reviews are done**, run the integration gate script from the main conversation. From the directory containing `package.json` (project root, or `web/` in a monorepo):
+3. **As each wave agent completes**, run its precheck (see per-agent review subsection) and dispatch its reviewer in the background. **Do NOT mark the wave-agent task `completed` yet** — completion is deferred until the review gate lands its fixes. Keep the wave-agent task `in_progress`.
+
+   If multiple agents' completion notifications arrive before you can respond, **batch all their prechecks and reviewer dispatches into a single response** with parallel tool_use blocks — same pattern as the wave dispatch in step 1. This saves an orchestrator round-trip per near-simultaneous pair.
+
+   When a reviewer returns, record its verdict as a terse ledger entry (see step 5 of the per-agent review flow for the format). Do not let full reviewer prose accumulate in working context across multiple waves.
+
+4. **Review gate — aggregate + dedupe + fix.** The review gate ALWAYS runs, even when every reviewer returned "no issues" — it is the ordering fence that closes wave-agent tasks and unblocks the next wave. Prerequisites:
+   - Every wave agent in this wave has returned.
+   - Every per-agent review has returned its verdict (each dispatched with `run_in_background: true`).
+
+   Don't start aggregating until all reviews have returned — partial aggregation risks locking in a severity decision that a later reviewer would have upgraded, and redoing dedup is more expensive than waiting.
+
+   Mark the wave's review-gate task `in_progress` (as soon as the last wave-agent completes is fine, even if some reviews are still returning — the live signal matters). Then:
+   1. **Collect every verdict into a terse ledger in main context.** Use a fenced markdown block grouped by severity, one line per finding: `[severity] [agent] [file:line] — short description`. This is the artifact you dedupe over — not the full reviewer prose.
+   2. **Deduplicate.** A duplicate is:
+      - **Same root cause, possibly different files** (e.g., three agents imported a since-removed utility — that's ONE fix applied at the pattern level, not three).
+      - **NOT a duplicate**: same identifier with different semantics (e.g., `createClient` from the SWR library in one file and the DB module in another — disambiguate by file path + usage context before merging).
+      - **Severity disagreement**: when two reviews call the same root-cause finding different severities, **take the higher severity** and record the dissent briefly in the ledger.
+   3. **Apply the consolidated fix pass in the main conversation.** One coherent sweep is cheaper and produces fewer merge conflicts than N per-agent sweeps. If a Critical finding cannot land because it requires redesign (architecture is wrong, a dependency doesn't exist, the contract is unimplementable) — stop and escalate (see "Error recovery" below). Do NOT apply a partial fix and proceed; do NOT close the wave-agent tasks.
+   4. **Write a short review-gate summary** to main context: total findings per severity, dedup outcomes (e.g., `3 findings about missing logger import → 1 consolidated fix across 3 files`), any deliberate Minor deferrals. This is the user's only window into what the gate decided.
+   5. `TaskUpdate(completed)` for every wave-agent task in this wave, then `TaskUpdate(completed)` for the review-gate task itself. Do this as a single batched response when practical.
+
+   **Single-agent wave**: still goes through the review gate. Dedup collapses to "read the one verdict", but the gate task exists in the task list and must be closed — downstream waves' `blockedBy` wiring depends on it.
+
+   **Empty gate (all verdicts were "no issues")**: run only sub-steps 1, 4 (one-line summary: "no findings"), and 5. No dedup pass, no fix pass.
+
+5. **Integration gate.** Run the gate script from the main conversation. From the directory containing `package.json`:
 
    ```bash
    bash ~/.claude/skills/plan-fanout/assets/fanout-gate.sh
@@ -246,12 +282,12 @@ The task list is the user's primary progress signal during a long-running fanout
    The script builds the touched-files list (modified vs HEAD, excluding deletions, plus untracked new files, cwd-relative so monorepo subdirs work), detects which of prettier / tsc / eslint are installed in `node_modules`, and runs whichever are present. Prettier and eslint run against the touched-files list only. Tsc runs against the whole project **unfiltered** — filtering to touched files would hide regressions in untouched consumers (e.g. a wave changes an exported type and the error surfaces in a file the wave didn't touch). Pre-existing tsc errors will show up; the orchestrator triages. See `assets/fanout-gate.sh` for the source.
 
    Optionally also run `git diff --stat HEAD` at this point to eyeball the cumulative scope and confirm nothing unexpected landed — a cheap sanity check that often catches scope creep you'd otherwise only notice at the final gate.
-5. If typecheck finds errors, **fix them yourself in the main conversation** — don't spawn another agent for small drift. The parent is always the right place for cross-file integration fixes.
-6. Only then move to the next wave.
+6. If typecheck finds errors, **fix them yourself in the main conversation** — don't spawn another agent for small drift. The parent is always the right place for cross-file integration fixes.
+7. **Only after BOTH the review gate (step 4) AND the integration gate (steps 5–6) have passed** may you dispatch the next wave. The review gate alone is not sufficient — the next wave's agents rely on a typecheck-clean tree to avoid chasing inherited errors.
 
-### Per-agent code review (after each agent completes, before marking the task done)
+### Per-agent code review (dispatched per agent, aggregated at the wave's review gate)
 
-Every successful subagent gets a code review scoped strictly to its owned files. The review catches issues the integration typecheck won't see (architectural problems, contract drift, missed sibling patterns, scope creep) and stops them from compounding into the next wave.
+Every successful subagent gets a code review scoped strictly to its owned files. The review catches issues the integration typecheck won't see (architectural problems, contract drift, missed sibling patterns, scope creep). Individual reviews *run* per agent (in the background so they parallelize); their findings are *aggregated and fixed* at the wave's review gate, so dedup can happen across agents before the orchestrator touches code.
 
 Use the bundled reviewer template at `assets/code-reviewer.md`. It is a file-list-scoped variant of the standard code-reviewer template — give it the agent's `OWNED_FILES` list and it will only look at those files, even though other agents in the same wave have uncommitted changes elsewhere in the working tree.
 
@@ -272,14 +308,20 @@ Use the bundled reviewer template at `assets/code-reviewer.md`. It is a file-lis
    - `{{WHAT_WAS_IMPLEMENTED}}` — one sentence describing what this agent built (pull from its report or your brief).
    - `{{DESCRIPTION}}` — 2-3 sentences with more detail.
    - `{{PLAN_REFERENCE}}` — short pointer back to the plan file or wave-level intent (e.g. "Wave 1 of the task-tags feature in plans/task-tags.md").
-4. Dispatch the filled template via the `Agent` tool (or `Task` — whichever your environment uses for spawning subagents) with `subagent_type: "general-purpose"`. Pass the entire filled template as the agent's prompt. Set `run_in_background: false` — you want this review's verdict before moving on. **Do not specify a specialized reviewer subagent type.** The bundled `assets/code-reviewer.md` template is the specialization: it contains the full review checklist, output format, scoping rules, and plan-fanout-specific checks. A general-purpose subagent following this template produces a valid review without any external dependency. This is why the template lives in the skill — to keep the skill self-contained.
-5. **Read the verdict** when the review returns and **fix everything that makes sense to fix**, regardless of severity:
-   - **Critical or Important issues**: fix them yourself in the main conversation, then call `TaskUpdate(task, completed)`. Do not spawn another agent — the original agent has already returned and re-spawning to fix small issues is wasteful. The parent has full context.
-   - **Minor issues**: fix them too if it's a quick change (most are). A type inconsistency, a missing null check, a stale comment — these take 30 seconds to fix now and accumulate into real debt if deferred. The default should be "fix it" not "skip it". Only defer a minor issue if fixing it would require disproportionate effort relative to its impact (e.g., a large-scale naming consistency sweep that's better done as its own task). Then call `TaskUpdate(task, completed)`.
-   - **No issues / Ready to integrate**: call `TaskUpdate(task, completed)` and move on.
+4. Dispatch the filled template via the `Agent` tool (or `Task` — whichever your environment uses for spawning subagents) with `subagent_type: "general-purpose"`. Pass the entire filled template as the agent's prompt. **Set `run_in_background: true`.** Do NOT wait for the review to finish before continuing — other wave agents may still be in flight or completing, and their own prechecks + reviews can be dispatched in parallel. You'll receive a completion notification when each review returns, at which point you read the verdict and proceed with step 5. **Do not specify a specialized reviewer subagent type.** The bundled `assets/code-reviewer.md` template is the specialization: it contains the full review checklist, output format, scoping rules, and plan-fanout-specific checks. A general-purpose subagent following this template produces a valid review without any external dependency. This is why the template lives in the skill — to keep the skill self-contained.
+5. **When the review completion notification arrives**, read the verdict but **do NOT apply fixes yet.** Extract each finding into a terse ledger line in main context — one line per finding in this format:
 
-   **In all three branches above, the `TaskUpdate(task, completed)` call is mandatory.** It is the single most-forgotten step in the loop. Make it the last thing you do for an agent before moving to the next one.
-6. If you fixed Critical or Important issues yourself, optionally re-run the review on the same file list to confirm. Use judgment — for a 2-line fix this is overkill, for a substantive rework it's worth the round-trip.
+   ```
+   [Critical | Important | Minor] [agent-id] [file:line] — short description
+   ```
+
+   A fenced markdown block grouped by severity is ideal. Discard the full reviewer prose once the ledger entry is recorded — keeping verbose reviewer reports across multiple waves bloats the main context unnecessarily. The review gate (step 4 of the wave loop above) is where aggregation, dedup, and fixes happen — not here. The wave-agent task stays `in_progress` until the review gate closes it.
+
+   If the review says "No issues / Ready to integrate" with no findings, note that in the ledger too (`[none]`) — the review gate still runs (see empty-gate handling there).
+
+6. **Optional confirmation re-run after the review gate has applied fixes.** Default: **skip.** Only trigger it when (a) the review gate applied non-trivial architectural rework to this agent's files, OR (b) the original review raised a Critical finding the fix might have only partially addressed. A 2-line lint-drift fix never warrants a confirmation run. In a 4-agent wave, confirming every fix means 4 sequential foreground reviewers — that's a ~4x wall-clock hit on the tail of the wave.
+
+   When you do run it: `run_in_background: false` (you want the verdict before the integration gate). If the re-run surfaces NEW issues: fix them in main and note them in the handoff's "Outstanding issues" section — do NOT re-open the already-`completed` wave-agent task.
 
 **Why scope to file list**: other agents in the same wave have uncommitted changes elsewhere in the working tree, so a naive `git diff` review would pollute THIS agent's verdict with findings about other agents' files. `assets/code-reviewer.md` enforces the scope inside the reviewer prompt itself — see that file for the exact guardrail language.
 
@@ -288,7 +330,9 @@ Use the bundled reviewer template at `assets/code-reviewer.md`. It is a file-lis
 - The agent's task was a single mechanical edit (e.g., bumping a version number, adding a single import). Use judgment.
 - The user has explicitly said they want to skip code reviews for this fanout (rare; only honor if explicit).
 
-**Note**: per-agent reviews are sequential and add wall-clock time. This is intentional — correctness over speed. Skip only if the user explicitly asks.
+When a review is skipped, that wave-agent task still waits for the review gate to close it (the review gate has nothing to aggregate for a skipped agent, so it marks the task `completed` immediately alongside the other wave agents). The only exception is when the ENTIRE wave has reviews skipped — in that case, run a trimmed review-gate step: first `TaskUpdate(review-gate, in_progress)`, write a one-line summary ("all reviews skipped per user request" or similar), then `TaskUpdate(completed)` for every wave-agent task and the review-gate task in one batched response, then proceed to the integration gate.
+
+**Note**: per-agent reviews run in the background (`run_in_background: true`) so they parallelize across wave agents — a 4-agent wave does not mean 4 sequential review round-trips. Verdicts collect in main context until the review gate aggregates them; that's when fixes land and tasks get marked `completed`. The integration gate runs after the review gate closes.
 
 ### Error recovery — when an agent fails or the gate finds problems
 
@@ -320,6 +364,12 @@ Instead:
 
 Lint errors and format errors are almost always "small drift" — fix in main.
 
+#### Review gate surfaces an unfixable Critical
+
+A reviewer raises a Critical finding that cannot land with a surgical fix in main — e.g., the whole approach to a type is wrong, a dependency doesn't exist, the contract is unimplementable. This is neither a brief problem, a work problem, nor an integration-gate failure; it's a design gap in the plan itself.
+
+**Stop. Do NOT apply a partial fix and proceed. Do NOT close the wave-agent tasks.** Present the finding, the successful agents' work (unchanged in the working tree), and ask the user to decide: revise the plan, defer the Critical, or abort the fanout. Follow the same "keep successful work in place" rule as partial-wave failure — the user reviews the full working-tree diff either way.
+
 #### When to escalate to the user instead of recovering
 
 Most failures are recoverable by the parent. Escalate when:
@@ -330,15 +380,22 @@ Most failures are recoverable by the parent. Escalate when:
 
 When escalating, keep the successful agents' work in place. Tell the user exactly what broke, what you tried, and what decision you need from them. Don't undo work that succeeded just because something else failed.
 
-### End-of-fanout final gate
+### Final gate
 
-Run the same gate script one more time against the full cumulative working-tree state:
+After the last wave's per-wave integration gate has passed, run `fanout-gate.sh` one more time against the full cumulative working-tree state:
 
 ```bash
 bash ~/.claude/skills/plan-fanout/assets/fanout-gate.sh
 ```
 
+**Skip-if-clean shortcut**: if the last wave's per-wave integration gate passed AND you have made no edits in the main conversation since (no review-gate fixes, no drift fixes), the final-gate run is a no-op confirmation. Run it anyway to close the `Final: ...` task cleanly, but don't expect new output.
+
 This catches cross-wave drift and anything the per-agent prechecks or reviewers missed. If the script exits non-zero, fix errors in main. If it reports "no touched files", the fanout produced no changes — investigate before proceeding (every agent may have no-oped due to a bad brief). **Do not commit** — the user commits manually after reviewing the full diff at handoff.
+
+Terminology recap (three gate concepts, same script):
+- **Per-wave integration gate** — `fanout-gate.sh` after each wave's review gate.
+- **Final gate** — `fanout-gate.sh` once more at end-of-fanout, closes the `Final: ...` task.
+- **Review gate** — main-conversation aggregation step, no script; runs BEFORE each per-wave integration gate.
 
 ### Handoff to the user
 

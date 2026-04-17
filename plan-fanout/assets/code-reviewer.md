@@ -26,8 +26,8 @@ You are reviewing code changes for production readiness as part of a parallel-fa
 To see ONLY this agent's changes (uncommitted, in the working tree), run each of these as a SEPARATE Bash tool call (never chain them with `&&`, never combine `cd` with another command):
 
 1. First call: `cd {{ABSOLUTE_REPO_PATH}}`
-2. Second call: `git diff --stat HEAD -- {{FILES_TO_REVIEW}}`
-3. Third call: `git diff HEAD -- {{FILES_TO_REVIEW}}`
+2. Second call: `git diff --stat HEAD {{FILES_TO_REVIEW}}`
+3. Third call: `git diff HEAD {{FILES_TO_REVIEW}}`
 
 The Bash tool's working directory persists across calls, so the bare git commands run in the directory you cd'd to. Do not write `cd {{ABSOLUTE_REPO_PATH}} && git diff ...` — that is a forbidden compound command (see the standalone-commands rule below).
 

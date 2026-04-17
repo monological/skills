@@ -68,6 +68,16 @@ This is the full Phase 4 presentation you would show the user for the task-tags 
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ W1 Review gate — main conversation (aggregate + dedupe + fix)               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • collect verdicts from 4 per-agent reviewers                               │
+│ • dedupe findings that span multiple agents                                 │
+│ • apply consolidated fix pass                                               │
+│ • TaskUpdate(completed) for W1-A/B/C/D and W1 review gate                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
                         W2 — 2 parallel background agents
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -85,9 +95,19 @@ This is the full Phase 4 presentation you would show the user for the task-tags 
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
+│ W2 Review gate — main conversation (aggregate + dedupe + fix)               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • collect verdicts from 2 per-agent reviewers                               │
+│ • dedupe findings that span multiple agents                                 │
+│ • apply consolidated fix pass                                               │
+│ • TaskUpdate(completed) for W2-A/B and W2 review gate                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
 │ Final gate — main conversation                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ • tsc --noEmit          (filtered to touched files via grep recipe)         │
+│ • tsc --noEmit          (whole project, unfiltered)                         │
 │ • prettier --check      (touched files only)                                │
 │ • eslint                (touched files only)                                │
 │ • git diff --stat HEAD  (handoff — no commit, user reviews and commits)     │
